@@ -10,20 +10,28 @@ stored as `png` image, which will be auto optimized using
 ## Prerequisites
 
 You need to have [pngcrush](https://pmt.sourceforge.io/pngcrush/) installed and
-in your path. The `screencapture` utility is part of the macOS distribution by
-default.
+in your path (You may circumvent that requirement using the `--no-optimization`
+flag).
+
+Imagemagick especially the `mogrify` command needs to be present if the
+`--resize` flag is used.
+
+The `screencapture` utility is part of the macOS distribution by default.
 
 ## Usage
 
 ```
-./timelapse-capture.sh <interval> <target-path>
+timelapse-capture [--resize=<width>x<height>] [--no-optimization] <interval> <target-path>
   <interval> - Interval between screencaptures in seconds
   <target-path> - Path to store screencaptures to
+
+Options:
+  --resize=<width>x<height> - Resize the screencapture to the given resolution (eg. 1920x1080)
+  --no-optimization - Don't optimize the screen capture for size
 ```
 
 Keep in mind, that the captures may be quite large, depending on your
-display resolution. On my MBP retina 13" they are about `500kb` each
-after optimization.
+display resolution.
 
 ## LICENSE
 

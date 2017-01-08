@@ -24,6 +24,10 @@ trap onExit SIGHUP SIGINT SIGTERM
 
 MAX_BACKGROUND_JOBS=2
 
+doResize=0
+resizeResolution=""
+doOptimization=1
+
 exitSignalReceived=0
 backgroundJobsWaiting=( )
 backgroundJobsRunningCount=0
@@ -34,9 +38,13 @@ backgroundJobsRunningCount=0
 printUsage() {
   echo "Timelapse Capture (c) Jakob Westhoff"
   echo
-  echo "timelapse-capture <interval> <target-path>"
+  echo "timelapse-capture [--resize=<width>x<height>] [--no-optimization] <interval> <target-path>"
   echo "  <interval> - Interval between screencaptures in seconds"
   echo "  <target-path> - Path to store screencaptures to"
+  echo
+  echo "Options:"
+  echo "  --resize=<width>x<height> - Resize the screencapture to the given resolution (eg. 1920x1080)"
+  echo "  --no-optimization - Don't optimize the screen capture for size"
   echo
 }
 
@@ -55,7 +63,7 @@ onExit() {
   while [ "${backgroundJobsRunningCount}" -gt 0 ] || [ "${#backgroundJobsWaiting[*]}" -gt 0 ]; do
     runNextWaitingBackgroundJob
     echo -en "\r                                                                               "
-    echo -en "\rWaiting - Background jobs (running/waiting): ${backgroundJobsRunningCount}/${#backgroundJobsWaiting[*]}"
+    echo -en "\rFinishing up - Background jobs (running/waiting): ${backgroundJobsRunningCount}/${#backgroundJobsWaiting[*]}"
     sleep .4
   done
   echo
@@ -108,9 +116,19 @@ assertTargetPathExistsAndIsWritable() {
 updateStatus() {
   local status="${1}"
   local imageCounter="${2}"
+  local nextTimeout="${3}"
+
+  local formattedImageCounter="$(printf "%09d" "${imageCounter}")"
 
   echo -en "\r                                                                               "
-  echo -en "\r${status} image ${imageCounter} - Background jobs (running/waiting): ${backgroundJobsRunningCount}/${#backgroundJobsWaiting[*]}"
+  case "${status}" in
+    Capturing)
+      echo -en "\r[${formattedImageCounter}] ${status} - Background jobs (running/waiting): ${backgroundJobsRunningCount}/${#backgroundJobsWaiting[*]}"
+      ;;
+    *)
+      echo -en "\r[${formattedImageCounter}] ${status} (next in ${nextTimeout}s) - Background jobs (running/waiting): ${backgroundJobsRunningCount}/${#backgroundJobsWaiting[*]}"
+      ;;
+  esac
 }
 
 ##
@@ -121,7 +139,6 @@ enqueueBackgroundJob() {
   local fullTargetPathname="${2}"
 
   backgroundJobsWaiting[${#backgroundJobsWaiting[*]}]="${jobType};${fullTargetPathname}"
-  updateBackgroundJobsRunningCount
   runNextWaitingBackgroundJob
 }
 
@@ -142,12 +159,16 @@ runBackgroundJob() {
   local fullTargetPathname="${enqueuedJob##*;}"
 
   case "${jobType}" in
-    pngcrush)
-      nice -n 10 -- pngcrush -ow -new -q -s "${fullTargetPathname}" "${fullTargetPathname}.pngcrush.tmp" &
-    ;;
-    resize)
-      (echo "RESIZE!"; sleep 1.5) &
-    ;;
+    resizeAndOptimize)
+      (
+        [ "${doResize}" -eq "1" ] && nice -n 10 -- mogrify -resize "${resizeResolution}^" -gravity center +repage -write "${fullTargetPathname}.mogrify.png" "${fullTargetPathname}" && mv "${fullTargetPathname}.mogrify.png" "${fullTargetPathname}";
+        [ "${doOptimization}" -eq "1" ] && nice -n 10 -- pngcrush -ow -new -q -s "${fullTargetPathname}" "${fullTargetPathname}.pngcrush.tmp"
+      ) &
+      ;;
+    *)
+      echo "Unknown job type: ${jobType}"
+      exit 1
+      ;;
   esac
 
   updateBackgroundJobsRunningCount
@@ -165,16 +186,22 @@ runCaptureLoop() {
   echo "Writing screencaptures to '${targetPath}' every ${interval}s..."
 
   local imageCounter=1
+  local nextTimeout="0"
   while [ "${exitSignalReceived}" -ne "1" ]; do
-    local imageName="$(printf "%09d.png" "${imageCounter}")"
-    local fullTargetPathname="${targetPath}/${imageName}"
-    updateStatus "Capturing" "${imageCounter}"
-    screencapture -x -m -T0 -tpng "${fullTargetPathname}"
-    enqueueBackgroundJob "resize" "${fullTargetPathname}"
-    enqueueBackgroundJob "pngcrush" "${fullTargetPathname}"
-    updateStatus "Captured" "${imageCounter}"
-    ((imageCounter++))
-    sleep "${interval}"
+    if [ "${nextTimeout}" -le 0 ]; then
+      local imageName="$(printf "%09d.png" "${imageCounter}")"
+      local fullTargetPathname="${targetPath}/${imageName}"
+      updateStatus "Capturing" "${imageCounter}" "${nextTimeout}"
+      screencapture -x -m -T0 -tpng "${fullTargetPathname}"
+      enqueueBackgroundJob "resizeAndOptimize" "${fullTargetPathname}"
+      ((imageCounter++))
+      nextTimeout="${interval}"
+    else
+      runNextWaitingBackgroundJob
+      updateStatus "Waiting" "${imageCounter}" "${nextTimeout}"
+      ((nextTimeout--))
+      sleep 1
+    fi
   done
 }
 
@@ -182,5 +209,25 @@ if [ "$#" -lt 2 ]; then
   printUsage
   exit 1
 fi
+
+# Parse options
+while [ "$#" -gt 2 ]; do
+  case "$1" in
+    --resize=*)
+      doResize=1
+      resizeResolution="${1#*=}"
+      shift
+      ;;
+    --no-optimization)
+      doOptimization=0
+      shift
+      ;;
+    *)
+      echo "Unknown option: ${1}"
+      printUsage
+      exit 1
+      ;;
+  esac
+done
 
 runCaptureLoop "${1}" "${2}"
