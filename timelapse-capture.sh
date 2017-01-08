@@ -52,6 +52,77 @@ printUsage() {
 }
 
 ##
+# Assert that the given targetPath exists and is writable
+##
+assertTargetPathExistsAndIsWritable() {
+  local targetPath="${1}"
+
+  if [ ! -d "${targetPath}" ]; then
+    echo "Target path: '${targetPath}' is not a directory"
+    exit 2
+  fi
+
+  if [ ! -w "${targetPath}" ]; then
+    echo "Target path: '${targetPath}' is not writable"
+    exit 2
+  fi
+}
+
+##
+# Assert that the given format is valid
+##
+assertOutputFormatIsValid() {
+  case "${1}" in
+    png|jpg)
+      : # Nothing to be done
+    ;;
+    *)
+      echo "Unknown output format: ${1}"
+      exit 2
+    ;;
+  esac
+}
+
+##
+# Assert that the given argument is an integer
+##
+assertIntervalIsInteger() {
+  case "${1}" in
+    ''|*[!0-9]*)
+      echo "Given interval '${1}' is not an integer"
+      exit 2
+    ;;
+  esac
+}
+
+##
+# Assert that the given resize value is valid
+##
+assertResizeValueIsValid() {
+  if [ "${1}" -ne "1" ]; then
+    return
+  fi
+
+  if ! [[ "${2}" =~ ^[0-9]+x[0-9]+$ ]]; then
+    echo "Given resize resolution '${2}' is not a valid resolution"
+    exit 2
+  fi
+}
+
+##
+# Assert that all the given paths and options are valid
+##
+assertFlagsAndArgumentsAreValid() {
+  local interval="${1}"
+  local targetPath="${2}"
+
+  assertTargetPathExistsAndIsWritable "${targetPath}"
+  assertOutputFormatIsValid "${outputFormat}"
+  assertIntervalIsInteger "${interval}"
+  assertResizeValueIsValid "${doResize}" "${resizeResolution}"
+}
+
+##
 # Trap handler executed once the script should be terminated.
 #
 # The handler mainly takes care of finishing the execution of all the queued
@@ -93,23 +164,6 @@ runNextWaitingBackgroundJob() {
 
   runBackgroundJob "${nextJob}"
   runNextWaitingBackgroundJob
-}
-
-##
-# Assert that the given targetPath exists and is writable
-##
-assertTargetPathExistsAndIsWritable() {
-  local targetPath="${1}"
-
-  if [ ! -d "${targetPath}" ]; then
-    echo "Target path: '${targetPath}' is not a directory"
-    exit 2
-  fi
-
-  if [ ! -w "${targetPath}" ]; then
-    echo "Target path: '${targetPath}' is not writable"
-    exit 2
-  fi
 }
 
 ##
@@ -198,8 +252,6 @@ runCaptureLoop() {
   local interval="${1}"
   local targetPath="${2}"
 
-  assertTargetPathExistsAndIsWritable "${targetPath}"
-
   echo "Writing screencaptures to '${targetPath}' as ${outputFormat} every ${interval}s..."
 
   local imageCounter=1
@@ -251,4 +303,5 @@ while [ "$#" -gt 2 ]; do
   esac
 done
 
+assertFlagsAndArgumentsAreValid "${1}" "${2}"
 runCaptureLoop "${1}" "${2}"
