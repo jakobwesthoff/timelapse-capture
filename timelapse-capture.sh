@@ -24,9 +24,11 @@ trap onExit SIGHUP SIGINT SIGTERM
 
 MAX_BACKGROUND_JOBS=2
 
+# Flag controlled options
 doResize=0
 resizeResolution=""
 doOptimization=1
+outputFormat="png"
 
 exitSignalReceived=0
 backgroundJobsWaiting=( )
@@ -38,13 +40,14 @@ backgroundJobsRunningCount=0
 printUsage() {
   echo "Timelapse Capture (c) Jakob Westhoff"
   echo
-  echo "timelapse-capture [--resize=<width>x<height>] [--no-optimization] <interval> <target-path>"
+  echo "timelapse-capture [--option=<value>, ...] <interval> <target-path>"
   echo "  <interval> - Interval between screencaptures in seconds"
   echo "  <target-path> - Path to store screencaptures to"
   echo
   echo "Options:"
   echo "  --resize=<width>x<height> - Resize the screencapture to the given resolution (eg. 1920x1080)"
   echo "  --no-optimization - Don't optimize the screen capture for size"
+  echo "  --format=<format> - Capture format (currently supported: png, jpg) (default: png)"
   echo
 }
 
@@ -160,10 +163,24 @@ runBackgroundJob() {
 
   case "${jobType}" in
     resizeAndOptimize)
-      (
-        [ "${doResize}" -eq "1" ] && nice -n 10 -- mogrify -resize "${resizeResolution}^" -gravity center +repage -write "${fullTargetPathname}.mogrify.png" "${fullTargetPathname}" && mv "${fullTargetPathname}.mogrify.png" "${fullTargetPathname}";
-        [ "${doOptimization}" -eq "1" ] && nice -n 10 -- pngcrush -ow -new -q -s "${fullTargetPathname}" "${fullTargetPathname}.pngcrush.tmp"
-      ) &
+      case "${outputFormat}" in
+        png)
+          (
+            [ "${doResize}" -eq "1" ] && nice -n 10 -- mogrify -resize "${resizeResolution}^" -gravity center +repage -write "${fullTargetPathname}.mogrify.png" "${fullTargetPathname}" && mv "${fullTargetPathname}.mogrify.png" "${fullTargetPathname}";
+            [ "${doOptimization}" -eq "1" ] && nice -n 10 -- pngcrush -ow -new -q -s "${fullTargetPathname}" "${fullTargetPathname}.pngcrush.tmp"
+          ) &
+          ;;
+        jpg)
+          (
+            [ "${doResize}" -eq "1" ] && nice -n 10 -- mogrify -resize "${resizeResolution}^" -gravity center +repage -quality 95 -write "${fullTargetPathname}.mogrify.jpg" "${fullTargetPathname}" && mv "${fullTargetPathname}.mogrify.jpg" "${fullTargetPathname}";
+            [ "${doOptimization}" -eq "1" ] && nice -n 10 -- jpeg-recompress --quiet --quality high --method ssim "${fullTargetPathname}" "${fullTargetPathname}.jpeg-recompress.jpg" && mv "${fullTargetPathname}.jpeg-recompress.jpg" "${fullTargetPathname}";
+          ) &
+          ;;
+        *)
+          echo "Unknown output format: ${outputFormat}"
+          exit 1
+          ;;
+      esac
       ;;
     *)
       echo "Unknown job type: ${jobType}"
@@ -183,16 +200,16 @@ runCaptureLoop() {
 
   assertTargetPathExistsAndIsWritable "${targetPath}"
 
-  echo "Writing screencaptures to '${targetPath}' every ${interval}s..."
+  echo "Writing screencaptures to '${targetPath}' as ${outputFormat} every ${interval}s..."
 
   local imageCounter=1
   local nextTimeout="0"
   while [ "${exitSignalReceived}" -ne "1" ]; do
     if [ "${nextTimeout}" -le 0 ]; then
-      local imageName="$(printf "%09d.png" "${imageCounter}")"
+      local imageName="$(printf "%09d.${outputFormat}" "${imageCounter}")"
       local fullTargetPathname="${targetPath}/${imageName}"
       updateStatus "Capturing" "${imageCounter}" "${nextTimeout}"
-      screencapture -x -m -T0 -tpng "${fullTargetPathname}"
+      screencapture -x -m -T0 -t${outputFormat} "${fullTargetPathname}"
       enqueueBackgroundJob "resizeAndOptimize" "${fullTargetPathname}"
       ((imageCounter++))
       nextTimeout="${interval}"
@@ -220,6 +237,10 @@ while [ "$#" -gt 2 ]; do
       ;;
     --no-optimization)
       doOptimization=0
+      shift
+      ;;
+    --format=*)
+      outputFormat="${1#*=}"
       shift
       ;;
     *)
