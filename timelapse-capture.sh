@@ -22,46 +22,15 @@
 
 trap onExit SIGHUP SIGINT SIGTERM
 
-MAX_OPTIMIZATIONS=2
+MAX_BACKGROUND_JOBS=2
 
 exitSignalReceived=0
-optimizationJobsWaiting=( )
-optimizationJobsRunning=0
+backgroundJobsWaiting=( )
+backgroundJobsRunningCount=0
 
-onExit() {
-  exitSignalReceived=1
-  echo
-  echo "Waiting for unfinished optimizations to settle..."
-
-  updateOptimizationJobsRunning
-  runEnqueuedOptimzations
-  while [ "${optimizationJobsRunning}" -gt 0 ] || [ "${#optimizationJobsWaiting[*]}" -gt 0 ]; do
-    updateOptimizationJobsRunning
-    runEnqueuedOptimzations
-    echo -en "\r                                                                               "
-    echo -en "\rWaiting - Optimizing ${optimizationJobsRunning} images (${#optimizationJobsWaiting[*]} waiting)"
-    sleep .4
-  done
-  echo
-  echo "Everything done."
-}
-
-runEnqueuedOptimzations() {
-  if [ ${#optimizationJobsWaiting[*]} -eq 0 ]; then
-    return
-  fi
-
-  if [ "${optimizationJobsRunning}" -ge "${MAX_OPTIMIZATIONS}" ]; then
-    return
-  fi
-
-  local nextJob=${optimizationJobsWaiting[0]}
-  optimizationJobsWaiting=("${optimizationJobsWaiting[@]:1}")
-
-  runOptimization "${nextJob}"
-  runEnqueuedOptimzations
-}
-
+##
+# Print usage information for the script execution
+##
 printUsage() {
   echo "Timelapse Capture (c) Jakob Westhoff"
   echo
@@ -71,6 +40,53 @@ printUsage() {
   echo
 }
 
+##
+# Trap handler executed once the script should be terminated.
+#
+# The handler mainly takes care of finishing the execution of all the queued
+# background operations.
+##
+onExit() {
+  exitSignalReceived=1
+  echo
+  echo "Waiting for unfinished background operations..."
+
+  runNextWaitingBackgroundJob
+  while [ "${backgroundJobsRunningCount}" -gt 0 ] || [ "${#backgroundJobsWaiting[*]}" -gt 0 ]; do
+    runNextWaitingBackgroundJob
+    echo -en "\r                                                                               "
+    echo -en "\rWaiting - Background jobs (running/waiting): ${backgroundJobsRunningCount}/${#backgroundJobsWaiting[*]}"
+    sleep .4
+  done
+  echo
+  echo "Everything done."
+}
+
+##
+# Run every next waiting background job until either the limit is reached
+# or no more jobs are waiting
+##
+runNextWaitingBackgroundJob() {
+  updateBackgroundJobsRunningCount
+
+  if [ ${#backgroundJobsWaiting[*]} -eq 0 ]; then
+    return
+  fi
+
+  if [ "${backgroundJobsRunningCount}" -ge "${MAX_BACKGROUND_JOBS}" ]; then
+    return
+  fi
+
+  local nextJob=${backgroundJobsWaiting[0]}
+  backgroundJobsWaiting=("${backgroundJobsWaiting[@]:1}")
+
+  runBackgroundJob "${nextJob}"
+  runNextWaitingBackgroundJob
+}
+
+##
+# Assert that the given targetPath exists and is writable
+##
 assertTargetPathExistsAndIsWritable() {
   local targetPath="${1}"
 
@@ -85,32 +101,62 @@ assertTargetPathExistsAndIsWritable() {
   fi
 }
 
+##
+# Update the currently displayed status message for a given status type and
+# image counter value
+##
 updateStatus() {
   local status="${1}"
   local imageCounter="${2}"
 
   echo -en "\r                                                                               "
-  echo -en "\r${status} image ${imageCounter} - Optimizing ${optimizationJobsRunning} images in the background (${#optimizationJobsWaiting[*]} waiting)"
+  echo -en "\r${status} image ${imageCounter} - Background jobs (running/waiting): ${backgroundJobsRunningCount}/${#backgroundJobsWaiting[*]}"
 }
 
-enqueueImageOptimization() {
-  local fullTargetPathname="${1}"
-  optimizationJobsWaiting[${#optimizationJobsWaiting[*]}]="${fullTargetPathname}"
-  updateOptimizationJobsRunning
-  runEnqueuedOptimzations
+##
+# Enqueue a new background operation of a given type for a given captured image
+##
+enqueueBackgroundJob() {
+  local jobType="${1}"
+  local fullTargetPathname="${2}"
+
+  backgroundJobsWaiting[${#backgroundJobsWaiting[*]}]="${jobType};${fullTargetPathname}"
+  updateBackgroundJobsRunningCount
+  runNextWaitingBackgroundJob
 }
 
-updateOptimizationJobsRunning() {
-  optimizationJobsRunning=$(jobs -l|grep 'Running'|wc -l)
+##
+# Update the count of currently running background jobs
+##
+updateBackgroundJobsRunningCount() {
+  backgroundJobsRunningCount=$(jobs -l|grep 'Running'|wc -l)
 }
 
-runOptimization() {
-  local fullTargetPathname="${1}"
-  nice -n 10 -- pngcrush -ow -new -q -s "${fullTargetPathname}" "${fullTargetPathname}.pngcrush.tmp" &
-  updateOptimizationJobsRunning
+##
+# Run a specific background job from the queue
+##
+runBackgroundJob() {
+  local enqueuedJob="${1}"
+
+  local jobType="${enqueuedJob%%;*}"
+  local fullTargetPathname="${enqueuedJob##*;}"
+
+  case "${jobType}" in
+    pngcrush)
+      nice -n 10 -- pngcrush -ow -new -q -s "${fullTargetPathname}" "${fullTargetPathname}.pngcrush.tmp" &
+    ;;
+    resize)
+      (echo "RESIZE!"; sleep 1.5) &
+    ;;
+  esac
+
+  updateBackgroundJobsRunningCount
 }
 
-runCapture() {
+##
+# Main routine running the capturing and background process enqueueing in a loop
+##
+runCaptureLoop() {
   local interval="${1}"
   local targetPath="${2}"
 
@@ -124,7 +170,8 @@ runCapture() {
     local fullTargetPathname="${targetPath}/${imageName}"
     updateStatus "Capturing" "${imageCounter}"
     screencapture -x -m -T0 -tpng "${fullTargetPathname}"
-    enqueueImageOptimization "${fullTargetPathname}"
+    enqueueBackgroundJob "resize" "${fullTargetPathname}"
+    enqueueBackgroundJob "pngcrush" "${fullTargetPathname}"
     updateStatus "Captured" "${imageCounter}"
     ((imageCounter++))
     sleep "${interval}"
@@ -136,4 +183,4 @@ if [ "$#" -lt 2 ]; then
   exit 1
 fi
 
-runCapture "${1}" "${2}"
+runCaptureLoop "${1}" "${2}"
